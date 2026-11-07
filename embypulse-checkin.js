@@ -1,4 +1,4 @@
-// Response and task script for the EmbyPulse user portal.
+// Loon response, cron and generic script for the EmbyPulse user portal.
 (function () {
   'use strict';
 
@@ -6,37 +6,8 @@
   const logoutPath = '/api/requests/logout';
   const cookiePattern = /^(?:session_id|session)=[\x21\x23-\x2B\x2D-\x3A\x3C-\x5B\x5D-\x7E]+$/;
   const isBrowser = typeof $request !== 'undefined' && !!$request;
-  const isQuantumultX = typeof $prefs !== 'undefined' && typeof $notify === 'function';
-  const scriptArgument = typeof $argument === 'undefined' ? null : $argument;
-  const isSurgeCompatible = typeof scriptArgument === 'string' && scriptArgument.startsWith('proxy:');
-  const argument = isQuantumultX
-    ? quantumultInstances()
-    : isSurgeCompatible ? scriptArgument.slice('proxy:'.length) : scriptArgument;
-  const store = isQuantumultX ? {
-    read: (key) => $prefs.valueForKey(key),
-    write: (value, key) => value === undefined ? $prefs.removeValueForKey(key) : $prefs.setValueForKey(value, key),
-  } : $persistentStore;
+  const argument = typeof $argument === 'undefined' ? null : $argument;
   class CheckinError extends Error {}
-
-  function quantumultInstances() {
-    const match = /#instances=([^&]*)/.exec($environment.sourcePath || '');
-    try { return match ? decodeURIComponent(match[1]) : ''; } catch (_) { return ''; }
-  }
-
-  function sendRequest(method, options, callback) {
-    if (!isQuantumultX) {
-      $httpClient[method](options, callback);
-      return;
-    }
-    const { url, headers, body } = options;
-    $task.fetch({
-      url, method: method.toUpperCase(), headers, body,
-      opts: { redirection: false, 'skip-cert-verify': false, 'auto-cookie': false },
-    }).then(
-      (response) => callback(null, { status: response.statusCode }, response.body),
-      (error) => callback(error),
-    );
-  }
 
   function normalizeOrigin(address) {
     const match = /^(https:\/\/)?([a-z0-9.-]+)(?::(\d{1,5}))?\/?(?:\?[^#\s]*)?$/i.exec(address.trim());
@@ -74,8 +45,7 @@
   function report(site, title, message) {
     const label = site ? `${site} · ${title}` : title;
     console.log(`EmbyPulse：${label} — ${message}`);
-    if (isQuantumultX) $notify('EmbyPulse 签到', label, message);
-    else $notification.post('EmbyPulse 签到', label, message);
+    $notification.post('EmbyPulse 签到', label, message);
   }
 
   function sessionCookies(header) {
@@ -106,14 +76,13 @@
     }
 
     function forgetSession(cookie) {
-      if (store.read(key) !== cookie) return;
-      // Surge and Stash accept strings. An empty value is treated as no session.
-      store.write(isSurgeCompatible ? '' : undefined, key);
-      if (store.read(key) === cookie) console.log(`EmbyPulse：${site} 未能清除已保存的登录会话。`);
+      if ($persistentStore.read(key) !== cookie) return;
+      $persistentStore.write(undefined, key);
+      if ($persistentStore.read(key) === cookie) console.log(`EmbyPulse：${site} 未能清除已保存的登录会话。`);
     }
 
     function readBrowserResponse(path) {
-      if (typeof $response === 'undefined' || Number(isQuantumultX ? $response.statusCode : $response.status) !== 200) return;
+      if (typeof $response === 'undefined' || Number($response.status) !== 200) return;
       const capture = path === pointsPath && $request.method === 'GET';
       const logout = path === logoutPath && $request.method === 'POST';
       if (!capture && !logout) return;
@@ -123,13 +92,13 @@
       if (!cookie || !body || body.status !== 'success') return;
       if (logout) {
         // Some portals refresh signed cookies before logout clears the browser session.
-        const saved = store.read(key);
+        const saved = $persistentStore.read(key);
         if (saved) forgetSession(saved);
-      } else if (body.data && typeof body.data.has_checked_in === 'boolean' && store.read(key) !== cookie) {
-        if (store.write(cookie, key)) {
-          notify('已保存登录会话', '可以手动运行一次签到，或等待定时执行。');
+      } else if (body.data && typeof body.data.has_checked_in === 'boolean' && $persistentStore.read(key) !== cookie) {
+        if ($persistentStore.write(cookie, key)) {
+          notify('已保存登录会话', '可以在 Loon 手动运行一次签到，或等待定时执行。');
         } else {
-          notify('会话保存失败', '请检查客户端的脚本日志和存储设置。');
+          notify('会话保存失败', '请检查 Loon 的脚本日志和存储设置。');
         }
       }
     }
@@ -137,7 +106,7 @@
     async function request(method, path, cookie, payload) {
       const options = {
         url: origin + path,
-        timeout: isSurgeCompatible ? 12 : 12000,
+        timeout: 12000,
         headers: { Cookie: cookie, Accept: 'application/json', Origin: origin, Referer: profile },
         'auto-cookie': false,
         'auto-redirect': false,
@@ -148,7 +117,7 @@
         options.body = JSON.stringify(payload);
       }
       const { code, body } = await new Promise((resolve, reject) => {
-        sendRequest(method, options, (error, response, body) => {
+        $httpClient[method](options, (error, response, body) => {
           if (error) reject(new CheckinError('网络请求失败，请检查连接后手动重试。'));
           else resolve({ code: Number(response && response.status), body: parseJSON(body) });
         });
@@ -201,8 +170,8 @@
       }
 
       const order = { item_id: item.id, type: item.type, cost, request_id: `loon-renew-${day}-${userId}` };
-      if (!store.write(JSON.stringify(order), storageKey)) {
-        throw new CheckinError('无法保存兑换请求编号，请检查客户端的存储设置。');
+      if (!$persistentStore.write(JSON.stringify(order), storageKey)) {
+        throw new CheckinError('无法保存兑换请求编号，请检查 Loon 的存储设置。');
       }
       return order;
     }
@@ -221,13 +190,13 @@
         notify('跳过续期', '积分接口还未确认今日签到。');
         return;
       }
-      if (store.read(key) !== cookie) {
+      if ($persistentStore.read(key) !== cookie) {
         throw new CheckinError('登录会话已变化，请重新运行。');
       }
 
       const day = new Date(Date.now() + 8 * 60 * 60 * 1000).toISOString().slice(0, 10);
       const storageKey = renewalKeyPrefix + userId;
-      let order = parseJSON(store.read(storageKey));
+      let order = parseJSON($persistentStore.read(storageKey));
       if (order && !order.request_id && order.day === day) {
         console.log(`EmbyPulse：${site} 今天的续期兑换已处理。`);
         return;
@@ -235,7 +204,7 @@
       const item = firstRenewalItem(info);
       if (order && order.request_id) {
         if (!item || item.id !== order.item_id || item.type !== order.type || item.cost !== order.cost) {
-          store.write(JSON.stringify({ day }), storageKey);
+          $persistentStore.write(JSON.stringify({ day }), storageKey);
           notify('旧订单结果待核对', '首件商品或价格已变化，今天暂停兑换，请在积分明细中核对。');
           return;
         }
@@ -255,9 +224,9 @@
       }
 
       // Keep an unresolved order until the server gives a definitive result.
-      const saved = parseJSON(store.read(storageKey));
+      const saved = parseJSON($persistentStore.read(storageKey));
       if (saved && saved.request_id === request_id) {
-        store.write(JSON.stringify({ day }), storageKey);
+        $persistentStore.write(JSON.stringify({ day }), storageKey);
       }
       if (!succeeded) {
         notify('续期兑换未成功', '网站拒绝了这笔兑换，请到积分补给站查看。');
@@ -275,9 +244,9 @@
     }
 
     async function checkIn() {
-      const cookie = store.read(key);
+      const cookie = $persistentStore.read(key);
       if (!cookie || sessionCookies(cookie) !== cookie) {
-        notify('尚未获取登录会话', '请启用 MitM 和脚本，登录 EmbyPulse 后打开个人中心。');
+        notify('尚未获取登录会话', '请启用 Loon 的 MitM 和脚本，登录 EmbyPulse 后打开个人中心。');
         return;
       }
 
@@ -287,7 +256,7 @@
         notify('今日已签到', '这次无需重复签到。');
         return cookie;
       }
-      if (store.read(key) !== cookie) {
+      if ($persistentStore.read(key) !== cookie) {
         notify('登录会话已变化', '请重新运行签到。');
         return;
       }
@@ -318,7 +287,7 @@
       } catch (error) {
         // Only forward messages created by this script; never log request details or raw responses.
         notify(`${phase}未完成`, error instanceof CheckinError
-          ? error.message : '运行出错，请检查客户端日志后重试。');
+          ? error.message : '运行出错，请检查 Loon 日志后重试。');
       }
     }
 

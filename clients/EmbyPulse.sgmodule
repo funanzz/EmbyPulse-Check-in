@@ -1,8 +1,0 @@
-#!name=EmbyPulse 自动签到
-#!desc=多个 EmbyPulse 实例每日签到，按站点开启积分续期。请手动添加 MitM 域名。
-#!arguments=instances,cron:0 8 * * *
-#!arguments-desc=instances 填写 HTTPS 门户地址，用英文分号分隔。需续期的站点加 |renew。cron 默认每天 08:00。
-
-[Script]
-EmbyPulse 登录会话 = type=http-response,pattern=^https://[A-Za-z0-9.-]+(?::[0-9]+)?/api/(?:user/points/info|requests/logout)(?:\?[^#]*)?$,requires-body=true,script-path=https://raw.githubusercontent.com/funanzz/EmbyPulse-Check-in/refs/heads/main/embypulse-checkin.js,argument="proxy:{{{instances}}}"
-EmbyPulse 每日签到 = type=cron,cronexp="{{{cron}}}",timeout=70,script-path=https://raw.githubusercontent.com/funanzz/EmbyPulse-Check-in/refs/heads/main/embypulse-checkin.js,argument="proxy:{{{instances}}}"
