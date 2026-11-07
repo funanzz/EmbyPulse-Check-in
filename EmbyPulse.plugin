@@ -1,0 +1,16 @@
+#!name = EmbyPulse 自动签到
+#!icon = https://raw.githubusercontent.com/zeyu8023/emby-pulse/efc389afc8f868a6ce3e8225cbf44d9768b63fd8/static/img/logo-app-2.png
+#!desc = 多个 EmbyPulse 实例每日签到和可选积分续期。新增实例需加入 MitM，并在 Safari 登录个人中心。
+#!loon_version = 3.5.1(983)
+#!date = 2026-11-07
+#!tag = 签到,续期
+
+[Argument]
+cronExpression = input,"0 8 * * *",type=string,tag=签到时间,desc=使用设备本地时间；默认每天 08:00
+instances = input,type=string,tag=实例列表,desc=用英文分号分隔 HTTPS 门户地址，带 |renew 的实例才会续期
+autoRenew = switch,true,type=boolean,tag=签到后自动续期,desc=只对实例列表里带 |renew 的站点生效
+
+[Script]
+response if ${url} ~= /^https:\/\/[a-z0-9.-]+(?::[0-9]+)?\/api\/(?:user\/points\/info|requests\/logout)(?:\?[^#]*)?$/i && (${request.method} == "GET" || ${request.method} == "POST") && ${request.header['Cookie']} ~= /(?:^|;\s*)(?:session_id|session)=/ && ${response.status} == 200 then script("https://raw.githubusercontent.com/funanzz/EmbyPulse-Check-in/refs/heads/main/embypulse-checkin.js", {${instances}}) with requires_body=true, tag="EmbyPulse 登录会话"
+cron ${cronExpression} then script("https://raw.githubusercontent.com/funanzz/EmbyPulse-Check-in/refs/heads/main/embypulse-checkin.js", {${instances}, ${autoRenew}}) with timeout=70, tag="EmbyPulse 每日签到"
+generic then script("https://raw.githubusercontent.com/funanzz/EmbyPulse-Check-in/refs/heads/main/embypulse-checkin.js", {${instances}, ${autoRenew}}) with timeout=70, tag="EmbyPulse 立即签到"
