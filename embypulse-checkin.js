@@ -1,13 +1,19 @@
-// Loon response, cron and generic script for the EmbyPulse user portal.
+// Loon cron and generic script for the EmbyPulse user portal.
 (function () {
   'use strict';
 
+  // Older plugin definitions can still reference this script as a response handler.
+  if (typeof $request !== 'undefined' && $request) {
+    $done({});
+    return;
+  }
+
+  const loginPath = '/api/requests/auth';
   const pointsPath = '/api/user/points/info';
-  const logoutPath = '/api/requests/logout';
   const cookiePattern = /^(?:session_id|session)=[\x21\x23-\x2B\x2D-\x3A\x3C-\x5B\x5D-\x7E]+$/;
-  const isBrowser = typeof $request !== 'undefined' && !!$request;
   const argument = typeof $argument === 'undefined' ? null : $argument;
   class CheckinError extends Error {}
+  class SessionError extends CheckinError {}
 
   function normalizeOrigin(address) {
     const match = /^(https:\/\/)?([a-z0-9.-]+)(?::(\d{1,5}))?\/?(?:\?[^#\s]*)?$/i.exec(address.trim());
@@ -24,20 +30,36 @@
   }
 
   function configuredInstances() {
-    const local = typeof argument === 'string';
-    const list = local ? argument : argument?.instances;
-    const renewalEnabled = local || argument?.autoRenew === true;
+    const list = typeof argument === 'string' ? argument : argument?.instances;
     const sites = new Map();
     let invalid = 0;
-    for (const entry of (typeof list === 'string' ? list : '').split(/[;\r\n]+/)) {
-      if (!entry.trim()) continue;
-      const [address, mode, ...extra] = entry.split('|').map((part) => part.trim());
+    if (typeof list !== 'string') return { sites, invalid };
+
+    // Quoted credentials can contain separators and preserve surrounding spaces.
+    const value = /(?:"((?:[^"\r\n]|"")*)"|([^,，;；"\r\n]*?))/.source;
+    const comma = /[^\S\r\n]*[,，][^\S\r\n]*/.source;
+    const record = new RegExp(/([^,，;；\r\n]+?)/.source + comma + value + comma + value + /[^\S\r\n]*(?:[;；\r\n]|$)/.source, 'y');
+    const nextEntry = /[^;；\r\n]*(?:[;；\r\n]|$)/y;
+    for (let offset = 0; offset < list.length;) {
+      record.lastIndex = offset;
+      const match = record.exec(list);
+      if (!match) {
+        nextEntry.lastIndex = offset;
+        const [entry] = nextEntry.exec(list);
+        if (entry.replace(/[;；\r\n]$/, '').trim()) invalid++;
+        offset = nextEntry.lastIndex;
+        continue;
+      }
+      offset = record.lastIndex;
+      const [, address, quotedUser, unquotedUser, quotedPassword, unquotedPassword] = match;
       const origin = normalizeOrigin(address);
-      if (!origin || extra.length || (mode !== undefined && mode !== 'renew')) {
+      const username = quotedUser?.replace(/""/g, '"') ?? unquotedUser.trim();
+      const password = quotedPassword?.replace(/""/g, '"') ?? unquotedPassword.trim();
+      if (!origin || !username || !password || sites.has(origin)) {
         invalid++;
         continue;
       }
-      if (!sites.has(origin)) sites.set(origin, renewalEnabled && mode === 'renew');
+      sites.set(origin, { username, password });
     }
     return { sites, invalid };
   }
@@ -48,19 +70,26 @@
     $notification.post('EmbyPulse 签到', label, message);
   }
 
-  function sessionCookies(header) {
-    if (typeof header !== 'string') return null;
-    const found = header.split(';').map((part) => part.trim()).filter((part) => /^(?:session_id|session)=/.test(part));
-    const names = new Set(found.map((part) => part.split('=', 1)[0]));
-    if (!found.length || names.size !== found.length || !found.every((part) => cookiePattern.test(part))) return null;
-    return found.sort().join('; ');
+  function sessionCookies(headers) {
+    const name = Object.keys(headers || {}).find((name) => name.toLowerCase() === 'set-cookie');
+    const header = headers?.[name];
+    const values = Array.isArray(header) ? header : [header];
+    const found = new Map();
+    for (const value of values) {
+      if (typeof value !== 'string') continue;
+      // Loon can return multiple Set-Cookie values in one header. Expires may also contain a comma.
+      for (const [, pair, key] of value.matchAll(/(?:^|,)\s*((session_id|session)=[^;,]*)(?=[;,]|$)/g)) {
+        if (cookiePattern.test(pair.trim())) found.set(key, pair.trim());
+      }
+    }
+    return found;
   }
 
-  function createInstance(origin, autoRenew) {
+  async function runInstance(origin, credentials, autoRenew) {
     const site = origin.slice('https://'.length);
     const profile = origin + '/?tab=profile';
-    const key = `embypulse.checkin.${site}.session`;
     const renewalKeyPrefix = `embypulse.renewal.${site}.`;
+    const session = new Map();
 
     function notify(title, message) {
       report(site, title, message);
@@ -70,72 +99,46 @@
       try { return JSON.parse(body); } catch (_) { return null; }
     }
 
-    function browserSession(headers) {
-      const name = Object.keys(headers || {}).find((name) => name.toLowerCase() === 'cookie');
-      return sessionCookies(name && headers[name]);
-    }
-
-    function forgetSession(cookie) {
-      if ($persistentStore.read(key) !== cookie) return;
-      $persistentStore.write(undefined, key);
-      if ($persistentStore.read(key) === cookie) console.log(`EmbyPulse：${site} 未能清除已保存的登录会话。`);
-    }
-
-    function readBrowserResponse(path) {
-      if (typeof $response === 'undefined' || Number($response.status) !== 200) return;
-      const capture = path === pointsPath && $request.method === 'GET';
-      const logout = path === logoutPath && $request.method === 'POST';
-      if (!capture && !logout) return;
-
-      const cookie = browserSession($request.headers);
-      const body = parseJSON($response.body);
-      if (!cookie || !body || body.status !== 'success') return;
-      if (logout) {
-        // Some portals refresh signed cookies before logout clears the browser session.
-        const saved = $persistentStore.read(key);
-        if (saved) forgetSession(saved);
-      } else if (body.data && typeof body.data.has_checked_in === 'boolean' && $persistentStore.read(key) !== cookie) {
-        if ($persistentStore.write(cookie, key)) {
-          notify('已保存登录会话', '可以在 Loon 手动运行一次签到，或等待定时执行。');
-        } else {
-          notify('会话保存失败', '请检查 Loon 的脚本日志和存储设置。');
-        }
-      }
-    }
-
-    async function request(method, path, cookie, payload) {
+    async function request(method, path, payload) {
       const options = {
         url: origin + path,
-        timeout: 12000,
-        headers: { Cookie: cookie, Accept: 'application/json', Origin: origin, Referer: profile },
+        timeout: path === loginPath ? 18000 : 12000,
+        headers: { Accept: 'application/json', Origin: origin, Referer: profile },
         'auto-cookie': false,
         'auto-redirect': false,
         insecure: false,
       };
+      if (session.size) options.headers.Cookie = [...session.values()].join('; ');
       if (payload !== undefined) {
         options.headers['Content-Type'] = 'application/json';
         options.body = JSON.stringify(payload);
       }
-      const { code, body } = await new Promise((resolve, reject) => {
+      const { code, headers, body } = await new Promise((resolve, reject) => {
         $httpClient[method](options, (error, response, body) => {
           if (error) reject(new CheckinError('网络请求失败，请检查连接后手动重试。'));
-          else resolve({ code: Number(response && response.status), body: parseJSON(body) });
+          else resolve({ code: Number(response?.status), headers: response?.headers, body: parseJSON(body) });
         });
       });
       if (code === 401 || (code === 200 && body?.status === 'error' && body.message === '未登录')) {
-        forgetSession(cookie);
-        notify('登录会话已失效', '请用 Safari 重新登录 EmbyPulse 并打开个人中心。');
-        return null;
+        throw new SessionError(path === loginPath ? '站点拒绝登录，请检查账号和密码。' : '站点未接受登录会话，请手动重试。');
       }
       if (!Number.isInteger(code) || code <= 0) throw new CheckinError('服务器没有返回有效的 HTTP 状态。');
-      if (code !== 200) throw new CheckinError(`服务器返回 HTTP ${code}，请在 Safari 检查网站是否可访问。`);
-      if (!body || typeof body !== 'object' || Array.isArray(body)) throw new CheckinError('服务器未返回有效数据，请在 Safari 检查网站。');
+      if (code !== 200) throw new CheckinError(`服务器返回 HTTP ${code}，请检查门户地址和站点状态。`);
+      if (!body || typeof body !== 'object' || Array.isArray(body)) throw new CheckinError('服务器未返回有效数据，请检查门户地址。');
+      for (const [name, pair] of sessionCookies(headers)) session.set(name, pair);
       return body;
     }
 
-    async function loadPoints(cookie) {
-      const info = await request('get', pointsPath, cookie);
-      if (!info) return null;
+    async function login() {
+      const data = await request('post', loginPath, credentials);
+      if (data.status !== 'success') {
+        throw new CheckinError(data.disabled ? '站点显示账号无法登录，请到门户查看账号状态。' : '站点拒绝登录，请检查账号和密码。');
+      }
+      if (!session.size) throw new CheckinError('站点未返回可用的登录会话，请检查门户地址。');
+    }
+
+    async function loadPoints() {
+      const info = await request('get', pointsPath);
       if (info.status !== 'success' || !info.data || typeof info.data.has_checked_in !== 'boolean') {
         throw new CheckinError('无法确认今日签到状态，请在个人中心检查。');
       }
@@ -153,7 +156,7 @@
       if (!item || !['renew', 'random_renew'].includes(item.type) || typeof item.id !== 'string' || !item.id.trim()) {
         return null;
       }
-      return { id: item.id, type: item.type, cost: pointsAmount(item.cost) };
+      return { id: item.id, cost: pointsAmount(item.cost) };
     }
 
     function prepareOrder(item, balance, storageKey, userId, day) {
@@ -169,57 +172,50 @@
         return null;
       }
 
-      const order = { item_id: item.id, type: item.type, cost, request_id: `loon-renew-${day}-${userId}` };
+      const order = { day, item_id: item.id, request_id: `loon-renew-${day}-${userId}` };
       if (!$persistentStore.write(JSON.stringify(order), storageKey)) {
         throw new CheckinError('无法保存兑换请求编号，请检查 Loon 的存储设置。');
       }
       return order;
     }
 
-    async function renew(cookie) {
-      const account = await request('get', '/api/requests/check', cookie);
-      if (!account) return;
+    async function renew() {
+      const account = await request('get', '/api/requests/check');
       const userId = account.status === 'success' && account.user && account.user.Id;
       if (typeof userId !== 'string' || !/^[A-Za-z0-9_-]{1,58}$/.test(userId)) {
         throw new CheckinError('无法确认当前账号身份，请重新打开个人中心。');
       }
 
-      const info = await loadPoints(cookie);
-      if (!info) return;
+      const info = await loadPoints();
       if (!info.has_checked_in) {
         notify('跳过续期', '积分接口还未确认今日签到。');
         return;
       }
-      if ($persistentStore.read(key) !== cookie) {
-        throw new CheckinError('登录会话已变化，请重新运行。');
-      }
-
       const day = new Date(Date.now() + 8 * 60 * 60 * 1000).toISOString().slice(0, 10);
       const storageKey = renewalKeyPrefix + userId;
-      let order = parseJSON($persistentStore.read(storageKey));
-      if (order && !order.request_id && order.day === day) {
-        console.log(`EmbyPulse：${site} 今天的续期兑换已处理。`);
+      const previous = parseJSON($persistentStore.read(storageKey));
+      const previousDay = previous?.day ?? /^loon-renew-(\d{4}-\d{2}-\d{2})-/.exec(previous?.request_id)?.[1];
+      // Some EmbyPulse versions ignore request_id and can debit again on a retry.
+      if (previousDay === day) {
+        if (previous.request_id) {
+          notify('续期结果待确认', '今天已提交过兑换，请在积分明细中核对。');
+        } else {
+          console.log(`EmbyPulse：${site} 今天的续期兑换已处理。`);
+        }
         return;
       }
       const item = firstRenewalItem(info);
-      if (order && order.request_id) {
-        if (!item || item.id !== order.item_id || item.type !== order.type || item.cost !== order.cost) {
-          $persistentStore.write(JSON.stringify({ day }), storageKey);
-          notify('旧订单结果待核对', '首件商品或价格已变化，今天暂停兑换，请在积分明细中核对。');
-          return;
-        }
-      } else {
-        order = prepareOrder(item, pointsAmount(info.points), storageKey, userId, day);
-      }
+      const order = prepareOrder(item, pointsAmount(info.points), storageKey, userId, day);
       if (!order) return;
 
       const { item_id, request_id } = order;
-      const data = await request('post', '/api/user/points/redeem', cookie, { item_id, request_id })
-        .catch(() => undefined);
-      if (data === null) return;
+      const data = await request('post', '/api/user/points/redeem', { item_id, request_id }).catch((error) => {
+        if (error instanceof SessionError) throw error;
+        return undefined;
+      });
       const succeeded = data?.status === 'success';
       if (!succeeded && (data?.status !== 'error' || data.retryable)) {
-        notify('续期结果待确认', '下次运行会沿用同一笔兑换请求。');
+        notify('续期结果待确认', '请在积分明细中核对，今天会暂停再次兑换。');
         return;
       }
 
@@ -244,25 +240,13 @@
     }
 
     async function checkIn() {
-      const cookie = $persistentStore.read(key);
-      if (!cookie || sessionCookies(cookie) !== cookie) {
-        notify('尚未获取登录会话', '请启用 Loon 的 MitM 和脚本，登录 EmbyPulse 后打开个人中心。');
-        return;
-      }
-
-      const info = await loadPoints(cookie);
-      if (!info) return;
+      const info = await loadPoints();
       if (info.has_checked_in) {
         notify('今日已签到', '这次无需重复签到。');
-        return cookie;
-      }
-      if ($persistentStore.read(key) !== cookie) {
-        notify('登录会话已变化', '请重新运行签到。');
         return;
       }
 
-      const data = await request('post', '/api/user/points/checkin', cookie);
-      if (!data) return;
+      const data = await request('post', '/api/user/points/checkin');
       if (data.status === 'success') {
         const details = [];
         if (Number.isFinite(data.reward)) details.push(`获得 ${data.reward} 积分`);
@@ -273,44 +257,33 @@
       } else {
         throw new CheckinError('网站未确认签到成功，请在个人中心查看。');
       }
-      return cookie;
     }
 
-    async function run() {
-      let phase = '签到';
-      try {
-        const cookie = await checkIn();
-        if (cookie && autoRenew) {
-          phase = '续期';
-          await renew(cookie);
-        }
-      } catch (error) {
-        // Only forward messages created by this script; never log request details or raw responses.
-        notify(`${phase}未完成`, error instanceof CheckinError
-          ? error.message : '运行出错，请检查 Loon 日志后重试。');
+    let phase = '登录';
+    try {
+      await login();
+      phase = '签到';
+      await checkIn();
+      if (autoRenew) {
+        phase = '续期';
+        await renew();
       }
+    } catch (error) {
+      // Only forward messages created by this script; never log request details or raw responses.
+      notify(`${phase}未完成`, error instanceof CheckinError
+        ? error.message : '运行出错，请检查 Loon 日志后重试。');
     }
-
-    return { readBrowserResponse, run };
   }
 
+  console.log('EmbyPulse 1.1.0');
   const { sites, invalid } = configuredInstances();
-  if (isBrowser) {
-    try {
-      const parts = /^(https:\/\/[^/?#]+)(\/[^?#]*)(?:\?[^#]*)?$/i.exec(String($request.url || ''));
-      const origin = parts && normalizeOrigin(parts[1]);
-      if (sites.has(origin)) createInstance(origin, sites.get(origin)).readBrowserResponse(parts[2]);
-    } catch (_) {
-      console.log('EmbyPulse：读取浏览器会话失败。');
-    } finally {
-      $done({});
-    }
-  } else if (!sites.size) {
-    report(null, '实例配置无效', '请填写至少一个 EmbyPulse HTTPS 实例地址。');
+  if (!sites.size) {
+    report(null, '实例配置无效', '请在新版插件的实例列表中填写「HTTPS 地址，用户名，密码；」。');
     $done();
   } else {
-    if (invalid) report(null, '已跳过无效实例', `有 ${invalid} 项地址或续期标记无效。`);
-    Promise.allSettled([...sites].map(([origin, renew]) => createInstance(origin, renew).run()))
+    if (invalid) report(null, '已跳过无效实例', `有 ${invalid} 项格式无效或地址重复，请检查实例列表。`);
+    const autoRenew = argument?.renewAll === true;
+    Promise.allSettled([...sites].map(([origin, credentials]) => runInstance(origin, credentials, autoRenew)))
       .finally(() => $done());
   }
 })();
