@@ -21,10 +21,15 @@
     const hash = source.indexOf('#');
     if (hash < 0) return {};
 
-    // Read the raw fragment so values are decoded exactly once.
+    const fragment = source.slice(hash + 1);
+    // The plain list is the last parameter, so ampersands in passwords stay intact.
+    const plain = /(?:^|&)sites=/.exec(fragment);
     const options = {};
+    if (plain) options.plainInstances = fragment.slice(plain.index + plain[0].length);
+
+    // Older tasks pass their list as a percent-encoded instances parameter.
     try {
-      for (const field of source.slice(hash + 1).split('&')) {
+      for (const field of fragment.slice(0, plain?.index ?? fragment.length).split('&')) {
         const separator = field.indexOf('=');
         if (separator < 1) continue;
         const key = field.slice(0, separator);
@@ -80,15 +85,17 @@
   }
 
   function configuredInstances() {
-    const list = typeof argument === 'string' ? argument : argument?.instances;
+    const plain = typeof argument?.plainInstances === 'string';
+    const list = plain ? argument.plainInstances : (typeof argument === 'string' ? argument : argument?.instances);
     const sites = new Map();
     let invalid = 0;
     if (typeof list !== 'string') return { sites, invalid };
 
     // Quoted credentials can contain separators and preserve surrounding spaces.
-    const value = /(?:"((?:[^"\r\n]|"")*)"|([^,，;；"\r\n]*?))/.source;
-    const comma = /[^\S\r\n]*[,，][^\S\r\n]*/.source;
-    const record = new RegExp(/([^,，;；\r\n]+?)/.source + comma + value + comma + value + /[^\S\r\n]*(?:[;；\r\n]|$)/.source, 'y');
+    const separator = plain ? '~' : ',，';
+    const value = String.raw`(?:"((?:[^"\r\n]|"")*)"|([^${separator};；"\r\n]*?))`;
+    const boundary = String.raw`[^\S\r\n]*[${separator}][^\S\r\n]*`;
+    const record = new RegExp(String.raw`([^${separator};；\r\n]+?)${boundary}${value}${boundary}${value}[^\S\r\n]*(?:[;；\r\n]|$)`, 'y');
     const nextEntry = /[^;；\r\n]*(?:[;；\r\n]|$)/y;
     for (let offset = 0; offset < list.length;) {
       record.lastIndex = offset;
@@ -322,11 +329,11 @@
     }
   }
 
-  console.log('EmbyPulse 1.2.0');
+  console.log('EmbyPulse 1.2.1');
   const { sites, invalid } = configuredInstances();
   if (!sites.size) {
     report(null, '实例配置无效', isQX
-      ? '请将编码后的「HTTPS 地址，用户名，密码；」填入任务的 instances 参数。'
+      ? '请在任务的 sites 参数中填写「HTTPS 地址~用户名~密码」，多个站点用分号分隔。'
       : '请在插件的实例列表中填写「HTTPS 地址，用户名，密码；」。');
     $done();
   } else {
