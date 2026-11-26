@@ -8,9 +8,9 @@
 [Argument]
 pluginEnabled = switch,true,type=boolean,tag=启用插件,desc=关闭后暂停每日签到和立即签到
 cronExpression = input,"0 8 * * *",type=string,tag=签到时间,desc=使用设备本地时间；默认每天 08:00
-instances = input,type=string,tag=实例列表,desc=格式为 HTTPS 地址，用户名，密码；地址，用户名，密码。支持中英文逗号和分号
+instances = input,type=string,tag=实例列表,desc=格式为 HTTPS 地址，用户名，密码；地址，用户名，密码。支持中英文逗号和分号，同一地址可配置多个账号
 renewAll = switch,false,type=boolean,tag=签到后自动续期,desc=打开后所有实例签到完成时自动尝试积分续期
 
 [Script]
-cron ${cronExpression} then script("https://raw.githubusercontent.com/funanzz/EmbyPulse-Check-in/refs/heads/main/embypulse-checkin.js?v=1.2.1", {${instances}, ${renewAll}}) with enable=${pluginEnabled}, timeout=90, tag="EmbyPulse 每日签到"
-generic then script("https://raw.githubusercontent.com/funanzz/EmbyPulse-Check-in/refs/heads/main/embypulse-checkin.js?v=1.2.1", {${instances}, ${renewAll}}) with enable=${pluginEnabled}, timeout=90, tag="EmbyPulse 立即签到"
+cron ${cronExpression} then script("https://raw.githubusercontent.com/funanzz/EmbyPulse-Check-in/refs/heads/main/embypulse-checkin.js?v=1.2.2", {${instances}, ${renewAll}}) with enable=${pluginEnabled}, timeout=90, tag="EmbyPulse 每日签到"
+generic then script("https://raw.githubusercontent.com/funanzz/EmbyPulse-Check-in/refs/heads/main/embypulse-checkin.js?v=1.2.2", {${instances}, ${renewAll}}) with enable=${pluginEnabled}, timeout=90, tag="EmbyPulse 立即签到"

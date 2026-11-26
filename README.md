@@ -1,8 +1,8 @@
 # EmbyPulse Check-in
 
-为 EmbyPulse 用户门户提供多实例自动签到和可选的积分续期。
+为 EmbyPulse 用户门户提供多实例、多账号自动签到和可选的积分续期。
 
-**v1.2.1** 支持 Loon 和 Quantumult X。默认按设备时间每天 **08:00** 执行，也可以手动运行。每次通过 HTTPS 直连各站点登录，通知会显示站点域名。
+**v1.2.2** 支持 Loon 和 Quantumult X。默认按设备时间每天 **08:00** 执行，也可以手动运行。每次通过 HTTPS 直连各站点登录，同一站点填了多个账号时，通知会按填写顺序显示账号序号。
 
 站点须提供 EmbyPulse 的用户门户和积分签到接口。使用用户门户的 HTTPS 地址，也可以填写域名或带端口的地址。 [EmbyPulse 项目](https://github.com/amlkiller/emby-pulse)
 
@@ -18,7 +18,7 @@
 https://pulse1.example.com，用户名1，密码1；https://pulse2.example.com，用户名2，密码2；
 ```
 
-如果用户名或密码含有逗号、分号、双引号或首尾空格，用英文双引号包裹该字段，字段里的英文双引号写成两个。例如 `https://pulse1.example.com,user1,"abc;d,""ef"`。每个门户地址填一组凭据。账号密码保存在 Loon 的插件参数里，分享配置或截图前请遮盖。
+如果用户名或密码含有逗号、分号、双引号或首尾空格，用英文双引号包裹该字段，字段里的英文双引号写成两个。例如 `https://pulse1.example.com,user1,"abc;d,""ef"`。同一门户的多个账号各填一组。账号密码保存在 Loon 的插件参数里，分享配置或截图前请遮盖。
 
 插件参数中的「启用插件」默认开启。关闭后，每日签到和立即签到都会停用，实例列表和其他设置会保留。
 
@@ -32,7 +32,7 @@ https://pulse1.example.com，用户名1，密码1；https://pulse2.example.com�
 
 需要 QX Build 934 或更高版本。添加任务库后，在 QX 里添加并编辑「EmbyPulse 每日签到」。也可以把 [EmbyPulse.conf](EmbyPulse.conf) 的任务行复制到 `[task_local]`。
 
-在任务脚本地址里直接填写 `sites=`。一组用 `~` 隔开地址、用户名和密码，多组用英文分号隔开。把 `renewAll` 放在 `sites` 前面。
+在任务脚本地址里直接填写 `sites=`。一组用 `~` 隔开地址、用户名和密码，多组用英文分号隔开。同一门户的多个账号各填一组。把 `renewAll` 放在 `sites` 前面。
 
 ```text
 #renewAll=false&sites=https://pulse1.example.com~user1~pass1;https://pulse2.example.com~user2~pass2

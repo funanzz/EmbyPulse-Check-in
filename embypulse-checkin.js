@@ -112,11 +112,18 @@
       const origin = normalizeOrigin(address);
       const username = quotedUser?.replace(/""/g, '"') ?? unquotedUser.trim();
       const password = quotedPassword?.replace(/""/g, '"') ?? unquotedPassword.trim();
-      if (!origin || !username || !password || sites.has(origin)) {
+      if (!origin || !username || !password) {
         invalid++;
         continue;
       }
-      sites.set(origin, { username, password });
+      if (!sites.has(origin)) sites.set(origin, new Map());
+      const accounts = sites.get(origin);
+      const accountKey = username.toLowerCase();
+      if (accounts.has(accountKey)) {
+        invalid++;
+        continue;
+      }
+      accounts.set(accountKey, { username, password });
     }
     return { sites, invalid };
   }
@@ -143,10 +150,11 @@
     return found;
   }
 
-  async function runInstance(origin, credentials, autoRenew) {
-    const site = origin.slice('https://'.length);
+  async function runInstance(origin, credentials, autoRenew, accountNumber) {
+    const host = origin.slice('https://'.length);
+    const site = accountNumber ? `${host}（账号 ${accountNumber}）` : host;
     const profile = origin + '/?tab=profile';
-    const renewalKeyPrefix = `embypulse.renewal.${site}.`;
+    const renewalKeyPrefix = `embypulse.renewal.${host}.`;
     const session = new Map();
 
     function notify(title, message) {
@@ -329,7 +337,7 @@
     }
   }
 
-  console.log('EmbyPulse 1.2.1');
+  console.log('EmbyPulse 1.2.2');
   const { sites, invalid } = configuredInstances();
   if (!sites.size) {
     report(null, '实例配置无效', isQX
@@ -337,9 +345,11 @@
       : '请在插件的实例列表中填写「HTTPS 地址，用户名，密码；」。');
     $done();
   } else {
-    if (invalid) report(null, '已跳过无效实例', `有 ${invalid} 项格式无效或地址重复，请检查实例列表。`);
+    if (invalid) report(null, '已跳过无效实例', `有 ${invalid} 项格式无效或在同一站点重复填写了同一账号，请检查实例列表。`);
     const autoRenew = argument?.renewAll === true;
-    Promise.allSettled([...sites].map(([origin, credentials]) => runInstance(origin, credentials, autoRenew)))
-      .finally(() => $done());
+    const tasks = [...sites].flatMap(([origin, accounts]) =>
+      [...accounts.values()].map((credentials, index) =>
+        runInstance(origin, credentials, autoRenew, accounts.size > 1 ? index + 1 : null)));
+    Promise.allSettled(tasks).finally(() => $done());
   }
 })();

@@ -2,7 +2,7 @@
   "name": "EmbyPulse Check-in",
   "task": [
     {
-      "config": "0 8 * * * https://raw.githubusercontent.com/funanzz/EmbyPulse-Check-in/main/embypulse-checkin.js?v=1.2.1#renewAll=false&sites=https://pulse.example.com~USERNAME~PASSWORD, tag=EmbyPulse 每日签到, img-url=https://raw.githubusercontent.com/zeyu8023/emby-pulse/efc389afc8f868a6ce3e8225cbf44d9768b63fd8/static/img/logo-app-2.png, enabled=false"
+      "config": "0 8 * * * https://raw.githubusercontent.com/funanzz/EmbyPulse-Check-in/main/embypulse-checkin.js?v=1.2.2#renewAll=false&sites=https://pulse.example.com~USERNAME~PASSWORD, tag=EmbyPulse 每日签到, img-url=https://raw.githubusercontent.com/zeyu8023/emby-pulse/efc389afc8f868a6ce3e8225cbf44d9768b63fd8/static/img/logo-app-2.png, enabled=false"
     }
   ],
   "description": "EmbyPulse 多站点签到 · Quantumult X"
