@@ -12,5 +12,5 @@ instances = input,type=string,tag=实例列表,desc=格式为 HTTPS 地址，用
 renewAll = switch,false,type=boolean,tag=签到后自动续期,desc=打开后所有实例签到完成时自动尝试积分续期
 
 [Script]
-cron ${cronExpression} then script("https://raw.githubusercontent.com/funanzz/EmbyPulse-Check-in/refs/heads/main/embypulse-checkin.js?v=1.1.0", {${instances}, ${renewAll}}) with enable=${pluginEnabled}, timeout=90, tag="EmbyPulse 每日签到"
-generic then script("https://raw.githubusercontent.com/funanzz/EmbyPulse-Check-in/refs/heads/main/embypulse-checkin.js?v=1.1.0", {${instances}, ${renewAll}}) with enable=${pluginEnabled}, timeout=90, tag="EmbyPulse 立即签到"
+cron ${cronExpression} then script("https://raw.githubusercontent.com/funanzz/EmbyPulse-Check-in/refs/heads/main/embypulse-checkin.js?v=1.2.0", {${instances}, ${renewAll}}) with enable=${pluginEnabled}, timeout=90, tag="EmbyPulse 每日签到"
+generic then script("https://raw.githubusercontent.com/funanzz/EmbyPulse-Check-in/refs/heads/main/embypulse-checkin.js?v=1.2.0", {${instances}, ${renewAll}}) with enable=${pluginEnabled}, timeout=90, tag="EmbyPulse 立即签到"

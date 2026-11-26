@@ -1,4 +1,4 @@
-// Loon cron and generic script for the EmbyPulse user portal.
+// Loon and Quantumult X task script for the EmbyPulse user portal.
 (function () {
   'use strict';
 
@@ -11,9 +11,59 @@
   const loginPath = '/api/requests/auth';
   const pointsPath = '/api/user/points/info';
   const cookiePattern = /^(?:session_id|session)=[\x21\x23-\x2B\x2D-\x3A\x3C-\x5B\x5D-\x7E]+$/;
-  const argument = typeof $argument === 'undefined' ? null : $argument;
+  const isQX = typeof $task !== 'undefined' && typeof $task.fetch === 'function';
+  const argument = isQX ? qxOptions() : (typeof $argument === 'undefined' ? null : $argument);
   class CheckinError extends Error {}
   class SessionError extends CheckinError {}
+
+  function qxOptions() {
+    const source = typeof $environment === 'undefined' ? '' : $environment.sourcePath || '';
+    const hash = source.indexOf('#');
+    if (hash < 0) return {};
+
+    // Read the raw fragment so values are decoded exactly once.
+    const options = {};
+    try {
+      for (const field of source.slice(hash + 1).split('&')) {
+        const separator = field.indexOf('=');
+        if (separator < 1) continue;
+        const key = field.slice(0, separator);
+        if (key === 'instances') options.instances = decodeURIComponent(field.slice(separator + 1));
+        if (key === 'renewAll') options.renewAll = decodeURIComponent(field.slice(separator + 1)) === 'true';
+      }
+    } catch (_) {
+      return {};
+    }
+    return options;
+  }
+
+  function readLocal(key) {
+    return isQX ? $prefs.valueForKey(key) : $persistentStore.read(key);
+  }
+
+  function writeLocal(value, key) {
+    if (!isQX) return $persistentStore.write(value, key);
+    $prefs.setValueForKey(value, key);
+    return readLocal(key) === value;
+  }
+
+  async function sendRequest(method, options, timeout) {
+    if (isQX) {
+      const response = await $task.fetch({
+        ...options,
+        method: method.toUpperCase(),
+        opts: { 'auto-cookie': false, redirection: false, 'skip-cert-verify': false },
+      });
+      return { code: response.statusCode, headers: response.headers, body: response.body };
+    }
+
+    return new Promise((resolve, reject) => {
+      $httpClient[method]({ ...options, timeout, 'auto-cookie': false, 'auto-redirect': false, insecure: false }, (error, response, body) => {
+        if (error) reject(error);
+        else resolve({ code: response?.status, headers: response?.headers, body });
+      });
+    });
+  }
 
   function normalizeOrigin(address) {
     const match = /^(https:\/\/)?([a-z0-9.-]+)(?::(\d{1,5}))?\/?(?:\?[^#\s]*)?$/i.exec(address.trim());
@@ -67,7 +117,8 @@
   function report(site, title, message) {
     const label = site ? `${site} · ${title}` : title;
     console.log(`EmbyPulse：${label} — ${message}`);
-    $notification.post('EmbyPulse 签到', label, message);
+    if (isQX) $notify('EmbyPulse 签到', label, message);
+    else $notification.post('EmbyPulse 签到', label, message);
   }
 
   function sessionCookies(headers) {
@@ -77,7 +128,7 @@
     const found = new Map();
     for (const value of values) {
       if (typeof value !== 'string') continue;
-      // Loon can return multiple Set-Cookie values in one header. Expires may also contain a comma.
+      // Multiple Set-Cookie values can share a header. Expires can also contain a comma.
       for (const [, pair, key] of value.matchAll(/(?:^|,)\s*((session_id|session)=[^;,]*)(?=[;,]|$)/g)) {
         if (cookiePattern.test(pair.trim())) found.set(key, pair.trim());
       }
@@ -102,30 +153,25 @@
     async function request(method, path, payload) {
       const options = {
         url: origin + path,
-        timeout: path === loginPath ? 18000 : 12000,
         headers: { Accept: 'application/json', Origin: origin, Referer: profile },
-        'auto-cookie': false,
-        'auto-redirect': false,
-        insecure: false,
       };
       if (session.size) options.headers.Cookie = [...session.values()].join('; ');
       if (payload !== undefined) {
         options.headers['Content-Type'] = 'application/json';
         options.body = JSON.stringify(payload);
       }
-      const { code, headers, body } = await new Promise((resolve, reject) => {
-        $httpClient[method](options, (error, response, body) => {
-          if (error) reject(new CheckinError('网络请求失败，请检查连接后手动重试。'));
-          else resolve({ code: Number(response?.status), headers: response?.headers, body: parseJSON(body) });
-        });
+      const response = await sendRequest(method, options, path === loginPath ? 18000 : 12000).catch(() => {
+        throw new CheckinError('网络请求失败，请检查连接后手动重试。');
       });
+      const code = Number(response.code);
+      const body = parseJSON(response.body);
       if (code === 401 || (code === 200 && body?.status === 'error' && body.message === '未登录')) {
         throw new SessionError(path === loginPath ? '站点拒绝登录，请检查账号和密码。' : '站点未接受登录会话，请手动重试。');
       }
       if (!Number.isInteger(code) || code <= 0) throw new CheckinError('服务器没有返回有效的 HTTP 状态。');
       if (code !== 200) throw new CheckinError(`服务器返回 HTTP ${code}，请检查门户地址和站点状态。`);
       if (!body || typeof body !== 'object' || Array.isArray(body)) throw new CheckinError('服务器未返回有效数据，请检查门户地址。');
-      for (const [name, pair] of sessionCookies(headers)) session.set(name, pair);
+      for (const [name, pair] of sessionCookies(response.headers)) session.set(name, pair);
       return body;
     }
 
@@ -172,9 +218,10 @@
         return null;
       }
 
+      // Keep the existing request ID across both clients for portals that deduplicate it.
       const order = { day, item_id: item.id, request_id: `loon-renew-${day}-${userId}` };
-      if (!$persistentStore.write(JSON.stringify(order), storageKey)) {
-        throw new CheckinError('无法保存兑换请求编号，请检查 Loon 的存储设置。');
+      if (!writeLocal(JSON.stringify(order), storageKey)) {
+        throw new CheckinError('无法保存兑换请求编号，请检查客户端的脚本存储。');
       }
       return order;
     }
@@ -193,7 +240,7 @@
       }
       const day = new Date(Date.now() + 8 * 60 * 60 * 1000).toISOString().slice(0, 10);
       const storageKey = renewalKeyPrefix + userId;
-      const previous = parseJSON($persistentStore.read(storageKey));
+      const previous = parseJSON(readLocal(storageKey));
       const previousDay = previous?.day ?? /^loon-renew-(\d{4}-\d{2}-\d{2})-/.exec(previous?.request_id)?.[1];
       // Some EmbyPulse versions ignore request_id and can debit again on a retry.
       if (previousDay === day) {
@@ -220,9 +267,9 @@
       }
 
       // Keep an unresolved order until the server gives a definitive result.
-      const saved = parseJSON($persistentStore.read(storageKey));
+      const saved = parseJSON(readLocal(storageKey));
       if (saved && saved.request_id === request_id) {
-        $persistentStore.write(JSON.stringify({ day }), storageKey);
+        writeLocal(JSON.stringify({ day }), storageKey);
       }
       if (!succeeded) {
         notify('续期兑换未成功', '网站拒绝了这笔兑换，请到积分补给站查看。');
@@ -271,14 +318,16 @@
     } catch (error) {
       // Only forward messages created by this script; never log request details or raw responses.
       notify(`${phase}未完成`, error instanceof CheckinError
-        ? error.message : '运行出错，请检查 Loon 日志后重试。');
+        ? error.message : '运行出错，请检查脚本日志后重试。');
     }
   }
 
-  console.log('EmbyPulse 1.1.0');
+  console.log('EmbyPulse 1.2.0');
   const { sites, invalid } = configuredInstances();
   if (!sites.size) {
-    report(null, '实例配置无效', '请在新版插件的实例列表中填写「HTTPS 地址，用户名，密码；」。');
+    report(null, '实例配置无效', isQX
+      ? '请将编码后的「HTTPS 地址，用户名，密码；」填入任务的 instances 参数。'
+      : '请在插件的实例列表中填写「HTTPS 地址，用户名，密码；」。');
     $done();
   } else {
     if (invalid) report(null, '已跳过无效实例', `有 ${invalid} 项格式无效或地址重复，请检查实例列表。`);
